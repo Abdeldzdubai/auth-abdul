@@ -2,14 +2,15 @@ require('dotenv').config();
 const express = require('express');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const cookieSession = require('cookie-session');
+const session = require('express-session');
 
 const app = express();
 
-app.use(cookieSession({
-  name: 'session',
-  keys: [process.env.SESSION_SECRET],
-  maxAge: 24 * 60 * 60 * 1000 // 1 day
+app.use(session({
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 24 * 60 * 60 * 1000 } // 1 day
 }));
 
 app.use(passport.initialize());
