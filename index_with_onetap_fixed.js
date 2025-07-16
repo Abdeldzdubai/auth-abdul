@@ -1,16 +1,26 @@
+
 require('dotenv').config();
 const express = require('express');
+const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const session = require('express-session');
+const { OAuth2Client } = require('google-auth-library');
+const cors = require('cors');
 
 const app = express();
+
+app.use(cors({ origin: 'https://dzdubai.webflow.io', credentials: true }));
+app.use(express.json());
 
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 24 * 60 * 60 * 1000 } // 1 day
+  cookie: {
+    sameSite: 'None',
+    secure: true,
+    maxAge: 24 * 60 * 60 * 1000
+  }
 }));
 
 app.use(passport.initialize());
@@ -35,7 +45,10 @@ app.get('/auth/google/callback',
   passport.authenticate('google', { failureRedirect: '/' }),
   (req, res) => {
     const user = req.user;
-    res.redirect(`${process.env.BASE_URL}/me?name=${encodeURIComponent(user.displayName)}`);
+    const name = encodeURIComponent(user.displayName);
+    const email = encodeURIComponent(user.emails[0].value);
+    const picture = encodeURIComponent(user.photos[0].value);
+    res.redirect(`${process.env.BASE_URL}/auth/success?name=${name}&email=${email}&picture=${picture}`);
   }
 );
 
@@ -44,14 +57,7 @@ app.get('/me', (req, res) => {
   res.send(req.user);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Serveur en écoute sur le port ${PORT}`));
-
-const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
-app.use(express.json()); // Important pour lire le body JSON
-
 app.post('/auth/onetap', async (req, res) => {
   const token = req.body.credential;
 
@@ -62,7 +68,6 @@ app.post('/auth/onetap', async (req, res) => {
     });
 
     const payload = ticket.getPayload();
-
     const user = {
       name: payload.name,
       email: payload.email,
@@ -71,10 +76,24 @@ app.post('/auth/onetap', async (req, res) => {
     };
 
     console.log("Utilisateur connecté via One Tap :", user);
-
     res.json({ success: true, user });
   } catch (err) {
     console.error("Erreur One Tap :", err);
     res.status(401).json({ success: false, message: "Token invalide" });
   }
 });
+
+app.get("/user", (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Non connecté" });
+  }
+
+  res.json({
+    name: req.user.displayName || req.user.name || "",
+    email: req.user.emails?.[0]?.value || req.user.email || "",
+    picture: req.user.photos?.[0]?.value || req.user.picture || ""
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Serveur en écoute sur le port ${PORT}`));
