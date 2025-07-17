@@ -10,19 +10,25 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const app = express();
 
 // Base URLs from environment
-const AUTH_BASE_URL = process.env.AUTH_BASE_URL; // e.g. https://auth-abdul.onrender.com
-const FRONT_BASE_URL = process.env.BASE_URL;     // e.g. https://dzdubai.webflow.io
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL;  // e.g. https://auth-abdul.onrender.com
+const FRONT_BASE_URL = process.env.BASE_URL;      // e.g. https://dzdubai.webflow.io
 
-// Middlewares
+// CORS configuration to allow calls from Webflow domain
 app.use(cors({
-  origin: FRONT_BASE_URL,
+  origin: 'https://dzdubai.webflow.io',
   credentials: true
 }));
+// Handle pre-flight for One Tap route
+app.options('/auth/onetap', cors({
+  origin: 'https://dzdubai.webflow.io',
+  credentials: true
+}));
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(passport.initialize());
 
-// Passport Google OAuth 2.0 strategy
+// Passport Google OAuth 2.0 strategy (popup flow)
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
@@ -61,12 +67,12 @@ app.post('/auth/onetap', async (req, res) => {
       idToken: credential,
       audience: process.env.ONE_TAP_CLIENT_ID
     });
-    const payload = ticket.getPayload();
+    const p = ticket.getPayload();
     const user = {
-      id: payload.sub,
-      name: payload.name,
-      email: payload.email,
-      picture: payload.picture
+      id:      p.sub,
+      name:    p.name,
+      email:   p.email,
+      picture: p.picture
     };
     const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, user });
@@ -79,7 +85,7 @@ app.post('/auth/onetap', async (req, res) => {
 // Protected user info route
 app.get('/user', (req, res) => {
   const authHeader = req.headers.authorization || '';
-  const token = authHeader.split(' ')[1];
+  const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
   if (!token) {
     return res.status(401).json({ error: 'Non connecté' });
   }
