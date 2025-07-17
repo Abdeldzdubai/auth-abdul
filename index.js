@@ -20,6 +20,7 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(passport.initialize());
 
 // Passport Google OAuth 2.0 strategy
 passport.use(new GoogleStrategy({
@@ -29,7 +30,6 @@ passport.use(new GoogleStrategy({
 }, (accessToken, refreshToken, profile, done) => {
   done(null, profile);
 }));
-app.use(passport.initialize());
 
 // OAuth Popup Routes
 app.get('/auth/google',
