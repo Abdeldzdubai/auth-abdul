@@ -1,4 +1,5 @@
 require('dotenv').config();
+
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
@@ -9,26 +10,30 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
 const app = express();
 
-// Base URLs from environment
-const AUTH_BASE_URL = process.env.AUTH_BASE_URL;  // e.g. https://auth-abdul.onrender.com
-const FRONT_BASE_URL = process.env.BASE_URL;      // e.g. https://dzdubai.webflow.io
+// Log environment variables for debugging
+console.log('BASE_URL=', process.env.BASE_URL);
+console.log('GOOGLE_CLIENT_ID=', process.env.GOOGLE_CLIENT_ID);
+console.log('GOOGLE_CLIENT_SECRET=', !!process.env.GOOGLE_CLIENT_SECRET);
+console.log('SESSION_SECRET=', !!process.env.SESSION_SECRET);
+console.log('ONE_TAP_CLIENT_ID=', process.env.ONE_TAP_CLIENT_ID);
 
-// CORS configuration to allow calls from Webflow domain
+// Use BASE_URL for redirects (fall back if AUTH_BASE_URL is not set)
+const BASE_URL = process.env.BASE_URL;
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL || process.env.BASE_URL;
+
+// CORS configuration
 app.use(cors({
-  origin: 'https://dzdubai.webflow.io',
-  credentials: true
-}));
-// Handle pre-flight for One Tap route
-app.options('/auth/onetap', cors({
-  origin: 'https://dzdubai.webflow.io',
+  origin: BASE_URL,
   credentials: true
 }));
 
+// Body parser for JSON payloads
 app.use(express.json());
+
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(passport.initialize());
 
-// Passport Google OAuth 2.0 strategy (popup flow)
+// Google OAuth2 strategy (popup flow)
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
@@ -53,8 +58,7 @@ app.get('/auth/google/callback',
       picture: user.photos[0].value
     };
     const token = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
-    // Redirect to front with token in query
-    res.redirect(`${FRONT_BASE_URL}/auth/success.html?token=${token}`);
+    res.redirect(`${BASE_URL}/auth/success.html?token=${token}`);
   }
 );
 
@@ -69,16 +73,16 @@ app.post('/auth/onetap', async (req, res) => {
     });
     const p = ticket.getPayload();
     const user = {
-      id:      p.sub,
-      name:    p.name,
-      email:   p.email,
+      id: p.sub,
+      name: p.name,
+      email: p.email,
       picture: p.picture
     };
     const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
-    return res.json({ success: true, token, user });
+    res.json({ success: true, token, user });
   } catch (err) {
     console.error('OneTap error:', err);
-    return res.status(401).json({ success: false, message: 'One Tap authentication failed.' });
+    res.status(401).json({ success: false, message: 'One Tap authentication failed.' });
   }
 });
 
@@ -91,9 +95,9 @@ app.get('/user', (req, res) => {
   }
   try {
     const payload = jwt.verify(token, process.env.SESSION_SECRET);
-    return res.json({ name: payload.name, email: payload.email, picture: payload.picture });
+    res.json({ name: payload.name, email: payload.email, picture: payload.picture });
   } catch (err) {
-    return res.status(401).json({ error: 'Token invalide ou expiré' });
+    res.status(401).json({ error: 'Token invalide ou expiré' });
   }
 });
 
