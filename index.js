@@ -1,92 +1,98 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const session = require('express-session');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
 
-// 1) CORS: allow Webflow origin
+// Base URLs from environment
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL; // e.g. https://auth-abdul.onrender.com
+const FRONT_BASE_URL = process.env.BASE_URL;     // e.g. https://dzdubai.webflow.io
+
+// Middlewares
 app.use(cors({
-  origin: 'https://dzdubai.webflow.io',
+  origin: FRONT_BASE_URL,
   credentials: true
 }));
-
-// 2) JSON parsing
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-// 3) Session configuration
-app.use(session({
-  secret: process.env.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: { sameSite: 'None', secure: true, maxAge: 24 * 60 * 60 * 1000 }
-}));
-
-// 4) Passport for Google OAuth2 popup
-app.use(passport.initialize());
-app.use(passport.session());
-
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
-
+// Passport Google OAuth 2.0 strategy
 passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: process.env.BASE_URL + '/auth/google/callback'
-  },
-  (accessToken, refreshToken, profile, done) => done(null, profile)
-));
+  clientID: process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  callbackURL: `${AUTH_BASE_URL}/auth/google/callback`
+}, (accessToken, refreshToken, profile, done) => {
+  done(null, profile);
+}));
+app.use(passport.initialize());
 
-// Popup authentication routes
+// OAuth Popup Routes
 app.get('/auth/google',
   passport.authenticate('google', { scope: ['profile', 'email'] })
 );
+
 app.get('/auth/google/callback',
-  passport.authenticate('google', { failureRedirect: '/' }),
+  passport.authenticate('google', { session: false }),
   (req, res) => {
-    const u = req.user;
-    const q = encodeURIComponent;
-    res.redirect(\`\${process.env.BASE_URL}/auth/success?name=\${q(u.displayName)}&email=\${q(u.emails[0].value)}&picture=\${q(u.photos[0].value)}\`);
+    const user = req.user;
+    const payload = {
+      id: user.id,
+      name: user.displayName,
+      email: user.emails[0].value,
+      picture: user.photos[0].value
+    };
+    const token = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
+    // Redirect to front with token in query
+    res.redirect(`${FRONT_BASE_URL}/auth/success.html?token=${token}`);
   }
 );
 
-// Serve the success page for popup to postMessage back
-app.get('/auth/success', (req, res) => {
-  res.sendFile(path.join(__dirname, 'success.html'));
-});
-
-// One Tap authentication route
-const oneTapClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+// Google One Tap Route
 app.post('/auth/onetap', async (req, res) => {
   try {
-    const ticket = await oneTapClient.verifyIdToken({
-      idToken: req.body.credential,
-      audience: process.env.GOOGLE_CLIENT_ID
+    const { credential } = req.body;
+    const client = new OAuth2Client(process.env.ONE_TAP_CLIENT_ID);
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: process.env.ONE_TAP_CLIENT_ID
     });
-    const p = ticket.getPayload();
-    res.json({ success: true, user: { name: p.name, email: p.email, picture: p.picture, email_verified: p.email_verified } });
-  } catch {
-    res.status(401).json({ success: false, message: 'Token invalide' });
+    const payload = ticket.getPayload();
+    const user = {
+      id: payload.sub,
+      name: payload.name,
+      email: payload.email,
+      picture: payload.picture
+    };
+    const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
+    return res.json({ success: true, token, user });
+  } catch (err) {
+    console.error('OneTap error:', err);
+    return res.status(401).json({ success: false, message: 'One Tap authentication failed.' });
   }
 });
 
-// Route to get current logged-in user
+// Protected user info route
 app.get('/user', (req, res) => {
-  if (!req.user) return res.status(401).json({ error: 'Non connecté' });
-  const u = req.user;
-  res.json({ name: u.displayName, email: u.emails[0].value, picture: u.photos[0].value });
-});
-
-// Optional /me route
-app.get('/me', (req, res) => {
-  if (!req.user) return res.status(401).send('Non connecté');
-  res.send(req.user);
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ error: 'Non connecté' });
+  }
+  try {
+    const payload = jwt.verify(token, process.env.SESSION_SECRET);
+    return res.json({ name: payload.name, email: payload.email, picture: payload.picture });
+  } catch (err) {
+    return res.status(401).json({ error: 'Token invalide ou expiré' });
+  }
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(\`Server listening on port \${PORT}\`));
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
