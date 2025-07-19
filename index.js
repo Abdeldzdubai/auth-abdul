@@ -1,64 +1,61 @@
+// index.js
 require('dotenv').config();
 const express = require('express');
-const path = require('path');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const { OAuth2Client } = require('google-auth-library');
+const path    = require('path');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const jwt     = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
 
-// Base URLs from environment
-const AUTH_BASE_URL = process.env.AUTH_BASE_URL;  // e.g. "https://auth-abdul.onrender.com"
-const FRONT_BASE_URL = process.env.BASE_URL;      // e.g. "https://dzdubai.webflow.io"
+// Lecture des variables d’environnement
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL;    // ex. https://auth-abdul.onrender.com
+const FRONT_BASE_URL = process.env.BASE_URL;       // ex. https://dzdubai.webflow.io
+const SESSION_SECRET = process.env.SESSION_SECRET;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const ONE_TAP_CLIENT_ID = process.env.ONE_TAP_CLIENT_ID;
 
-// CORS configuration
-app.use(cors({
-  origin: FRONT_BASE_URL,
-  credentials: true
-}));
-app.options('/auth/onetap', cors({
-  origin: FRONT_BASE_URL,
-  credentials: true
-}));
-
-// JSON parser
+// Pour parser le JSON (One‑Tap)
 app.use(express.json());
 
-// Static files (if any)
+// Routes statiques si besoin
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize Passport
+// Initialisation de Passport
 app.use(passport.initialize());
 
-// Google OAuth Strategy for popup flow
+// Stratégie OAuth Google pour le popup
 passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  clientID: GOOGLE_CLIENT_ID,
+  clientSecret: GOOGLE_CLIENT_SECRET,
   callbackURL: `${AUTH_BASE_URL}/auth/google/callback`
 }, (accessToken, refreshToken, profile, done) => {
+  // Réduisez ici le profile si vous le souhaitez
   done(null, profile);
 }));
 
-// 1) Trigger Google OAuth via popup
+// 1) Déclenchement du popup OAuth
 app.get('/auth/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
+  passport.authenticate('google', { scope: ['profile','email'] })
 );
 
-// 2) OAuth callback: send inline HTML to postMessage and close popup
+// 2) Callback OAuth : envoi inline du JS pour postMessage + fermeture
 app.get('/auth/google/callback',
-  passport.authenticate('google', { session: false, failureRedirect: `${FRONT_BASE_URL}` }),
+  passport.authenticate('google', { session: false, failureRedirect: FRONT_BASE_URL }),
   (req, res) => {
+    // Génération du payload et du JWT
     const user = req.user;
     const payload = {
       id:      user.id,
       name:    user.displayName,
-      email:   user.emails[0].value,
-      picture: user.photos[0].value
+      email:   (user.emails[0] && user.emails[0].value) || '',
+      picture: (user.photos[0] && user.photos[0].value) || ''
     };
-    const token = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign(payload, SESSION_SECRET, { expiresIn: '1d' });
 
+    // On renvoie un mini‑HTML qui poste le message et ferme la popup
     res.send(`<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -67,15 +64,12 @@ app.get('/auth/google/callback',
 </head>
 <body>
   <script>
-    // Send token and user info to the opener window
+    // Envoie le token + user à la fenêtre parente
     window.opener.postMessage(
-      {
-        token: '${token}',
-        user: ${JSON.stringify(payload)}
-      },
+      { token: '${token}', user: ${JSON.stringify(payload)} },
       '${FRONT_BASE_URL}'
     );
-    // Close the popup
+    // Ferme la popup
     window.close();
   </script>
 </body>
@@ -83,14 +77,14 @@ app.get('/auth/google/callback',
   }
 );
 
-// Google One-Tap route
+// 3) Endpoint Google One‑Tap (inchangé)
 app.post('/auth/onetap', async (req, res) => {
   try {
     const { credential } = req.body;
-    const client = new OAuth2Client(process.env.ONE_TAP_CLIENT_ID);
+    const client = new OAuth2Client(ONE_TAP_CLIENT_ID);
     const ticket = await client.verifyIdToken({
       idToken: credential,
-      audience: process.env.ONE_TAP_CLIENT_ID
+      audience: ONE_TAP_CLIENT_ID
     });
     const googlePayload = ticket.getPayload();
     const user = {
@@ -99,36 +93,34 @@ app.post('/auth/onetap', async (req, res) => {
       email:   googlePayload.email,
       picture: googlePayload.picture
     };
-    const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
-    return res.json({ success: true, token, user });
+    const token = jwt.sign(user, SESSION_SECRET, { expiresIn: '1d' });
+    res.json({ success: true, token, user });
   } catch (err) {
     console.error('OneTap error:', err);
-    return res.status(401).json({ success: false, message: 'One Tap authentication failed.' });
+    res.status(401).json({ success: false, message: 'One Tap authentication failed.' });
   }
 });
 
-// Protected user info route
+// 4) Route protégée pour vérifier le token
 app.get('/user', (req, res) => {
   const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
-  if (!token) {
-    return res.status(401).json({ error: 'Non connecté' });
-  }
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Non connecté' });
   try {
-    const payload = jwt.verify(token, process.env.SESSION_SECRET);
-    return res.json({ name: payload.name, email: payload.email, picture: payload.picture });
-  } catch (err) {
-    return res.status(401).json({ error: 'Token invalide ou expiré' });
+    const payload = jwt.verify(token, SESSION_SECRET);
+    res.json({ name: payload.name, email: payload.email, picture: payload.picture });
+  } catch {
+    res.status(401).json({ error: 'Token invalide ou expiré' });
   }
 });
 
-// Fallback for SPA
+// 5) Fallback SPA
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Start server
+// Démarrage du serveur
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Serveur lancé sur le port ${PORT}`);
 });
