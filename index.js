@@ -59,6 +59,7 @@ app.get('/auth/google/callback',
     };
     const token = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
 
+    // Inline HTML that dynamically determines targetOrigin
     res.send(`<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -67,13 +68,15 @@ app.get('/auth/google/callback',
 </head>
 <body>
   <script>
+    // Determine opener origin to ensure correct targetOrigin
+    const targetOrigin = window.opener ? window.opener.location.origin : '*';
     // Send token and user info to the opener window
     window.opener.postMessage(
       {
         token: '${token}',
         user: ${JSON.stringify(payload)}
       },
-      '${FRONT_BASE_URL}'
+      targetOrigin
     );
     // Close the popup
     window.close();
