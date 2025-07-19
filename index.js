@@ -1,104 +1,94 @@
+// index.js
 require('dotenv').config();
-const express = require('express');
-const path = require('path');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const { OAuth2Client } = require('google-auth-library');
-const passport = require('passport');
+const express   = require('express');
+const path      = require('path');
+const passport  = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const jwt       = require('jsonwebtoken');
 
 const app = express();
 
-// Base URLs from environment
-const AUTH_BASE_URL = process.env.AUTH_BASE_URL;  // e.g. https://auth-abdul.onrender.com
-const FRONT_BASE_URL = process.env.BASE_URL;      // e.g. https://dzdubai.webflow.io
-
-// CORS configuration to allow calls from Webflow domain
-app.use(cors({
-  origin: 'https://dzdubai.webflow.io',
-  credentials: true
-}));
-// Handle pre-flight for One Tap route
-app.options('/auth/onetap', cors({
-  origin: 'https://dzdubai.webflow.io',
-  credentials: true
-}));
-
+// Pour parser le body JSON (nécessaire si vous utilisez One-Tap en POST)
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// 1) Initialisation de Passport
 app.use(passport.initialize());
 
-// Passport Google OAuth 2.0 strategy (popup flow)
+// 2) Stratégie Google OAuth pour le popup
 passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
+  clientID:     process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL: `${AUTH_BASE_URL}/auth/google/callback`
+  callbackURL:  process.env.AUTH_CALLBACK_URL  // ex. https://auth-abdul.onrender.com/auth/google/callback
 }, (accessToken, refreshToken, profile, done) => {
-  done(null, profile);
+  const user = {
+    id:          profile.id,
+    displayName: profile.displayName,
+    emails:      profile.emails,
+    photos:      profile.photos
+  };
+  done(null, user);
 }));
 
-// OAuth Popup Routes
+// 3) Route d’authentification initiale (popup)
 app.get('/auth/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
+  passport.authenticate('google', { scope: ['profile','email'] })
 );
 
+// 4) Callback OAuth : on envoie un HTML inline qui postMessage + ferme le popup
 app.get('/auth/google/callback',
-  passport.authenticate('google', { session: false }),
+  passport.authenticate('google', { session: false, failureRedirect: '/login' }),
   (req, res) => {
     const user = req.user;
     const payload = {
-      id: user.id,
-      name: user.displayName,
-      email: user.emails[0].value,
+      id:      user.id,
+      name:    user.displayName,
+      email:   user.emails[0].value,
       picture: user.photos[0].value
     };
     const token = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
-    // Redirect to front with token in query
-    res.redirect(`${FRONT_BASE_URL}/auth/success.html?token=${token}`);
+
+    res.send(\`
+      <!DOCTYPE html>
+      <html lang="fr">
+      <head><meta charset="utf-8"><title>Connexion réussie</title></head>
+      <body>
+        <script>
+          // Envoie le token et le profil à la fenêtre parente
+          window.opener.postMessage(
+            {
+              token: '\${token}',
+              user: \${JSON.stringify(payload)}
+            },
+            '\${process.env.FRONT_BASE_URL}'  // ex. https://dzdubai.webflow.io
+          );
+          // Ferme immédiatement la popup
+          window.close();
+        </script>
+      </body>
+      </html>
+    \`);
   }
 );
 
-// Google One Tap Route
-app.post('/auth/onetap', async (req, res) => {
+// 5) Route pour Google One-Tap (à adapter selon votre implémentation)
+app.post('/auth/onetap', (req, res) => {
+  const { credential } = req.body;
   try {
-    const { credential } = req.body;
-    const client = new OAuth2Client(process.env.ONE_TAP_CLIENT_ID);
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: process.env.ONE_TAP_CLIENT_ID
-    });
-    const p = ticket.getPayload();
-    const user = {
-      id:      p.sub,
-      name:    p.name,
-      email:   p.email,
-      picture: p.picture
-    };
-    const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
-    return res.json({ success: true, token, user });
+    const decoded = jwt.verify(credential, process.env.GOOGLE_CLIENT_SECRET);
+    res.json({ user: decoded });
   } catch (err) {
-    console.error('OneTap error:', err);
-    return res.status(401).json({ success: false, message: 'One Tap authentication failed.' });
+    res.status(401).json({ error: 'One-Tap invalide' });
   }
 });
 
-// Protected user info route
-app.get('/user', (req, res) => {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
-  if (!token) {
-    return res.status(401).json({ error: 'Non connecté' });
-  }
-  try {
-    const payload = jwt.verify(token, process.env.SESSION_SECRET);
-    return res.json({ name: payload.name, email: payload.email, picture: payload.picture });
-  } catch (err) {
-    return res.status(401).json({ error: 'Token invalide ou expiré' });
-  }
+// 6) Static files et fallback SPA
+app.use(express.static('public'));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Start server
+// 7) Démarrage
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Serveur démarré sur le port ${PORT}`);
 });
