@@ -1,10 +1,10 @@
 // index.js
 require('dotenv').config();
-const express   = require('express');
-const path      = require('path');
-const passport  = require('passport');
+const express = require('express');
+const path = require('path');
+const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const jwt       = require('jsonwebtoken');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 
@@ -16,22 +16,22 @@ app.use(passport.initialize());
 
 // 2) Stratégie Google OAuth pour le popup
 passport.use(new GoogleStrategy({
-  clientID:     process.env.GOOGLE_CLIENT_ID,
+  clientID: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL:  process.env.AUTH_CALLBACK_URL  // ex. https://auth-abdul.onrender.com/auth/google/callback
+  callbackURL: process.env.AUTH_CALLBACK_URL  // ex. https://auth-abdul.onrender.com/auth/google/callback
 }, (accessToken, refreshToken, profile, done) => {
   const user = {
-    id:          profile.id,
+    id: profile.id,
     displayName: profile.displayName,
-    emails:      profile.emails,
-    photos:      profile.photos
+    emails: profile.emails,
+    photos: profile.photos
   };
   done(null, user);
 }));
 
 // 3) Route d’authentification initiale (popup)
 app.get('/auth/google',
-  passport.authenticate('google', { scope: ['profile','email'] })
+  passport.authenticate('google', { scope: ['profile', 'email'] })
 );
 
 // 4) Callback OAuth : on envoie un HTML inline qui postMessage + ferme le popup
@@ -40,33 +40,34 @@ app.get('/auth/google/callback',
   (req, res) => {
     const user = req.user;
     const payload = {
-      id:      user.id,
-      name:    user.displayName,
-      email:   user.emails[0].value,
+      id: user.id,
+      name: user.displayName,
+      email: user.emails[0].value,
       picture: user.photos[0].value
     };
     const token = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
 
-    res.send(\`
-      <!DOCTYPE html>
-      <html lang="fr">
-      <head><meta charset="utf-8"><title>Connexion réussie</title></head>
-      <body>
-        <script>
-          // Envoie le token et le profil à la fenêtre parente
-          window.opener.postMessage(
-            {
-              token: '\${token}',
-              user: \${JSON.stringify(payload)}
-            },
-            '\${process.env.FRONT_BASE_URL}'  // ex. https://dzdubai.webflow.io
-          );
-          // Ferme immédiatement la popup
-          window.close();
-        </script>
-      </body>
-      </html>
-    \`);
+    res.send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Connexion réussie</title>
+</head>
+<body>
+  <script>
+    // Envoie le token et le profil à la fenêtre parente
+    window.opener.postMessage(
+      {
+        token: '${token}',
+        user: ${JSON.stringify(payload)}
+      },
+      '${process.env.FRONT_BASE_URL}'  // ex. https://dzdubai.webflow.io
+    );
+    // Ferme immédiatement la popup
+    window.close();
+  </script>
+</body>
+</html>`);
   }
 );
 
