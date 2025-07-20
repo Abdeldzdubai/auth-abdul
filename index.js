@@ -11,7 +11,7 @@ const Airtable  = require('airtable');
 
 const app = express();
 
-// === CORS ===
+// === CORS global ===
 app.use(cors({
   origin: process.env.BASE_URL,  // ex. https://dzdubai.webflow.io
   credentials: true
@@ -25,7 +25,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Initialize Airtable
 Airtable.configure({ apiKey: process.env.AIRTABLE_API_KEY });
 const base = Airtable.base(process.env.AIRTABLE_BASE_ID);
-const TABLE_NAME = process.env.AIRTABLE_TABLE_NAME; // ex. "Users"
+const TABLE_NAME = process.env.AIRTABLE_TABLE_NAME;
 
 // Passport & Google OAuth setup
 app.use(passport.initialize());
@@ -51,6 +51,7 @@ app.get('/auth/google/callback',
     const firstName = profile.name?.givenName || '';
     const lastName  = profile.name?.familyName  || '';
     const email     = (profile.emails[0] && profile.emails[0].value) || '';
+    const picture   = (profile.photos[0] && profile.photos[0].value) || '';
 
     // --- Airtable upsert ---
     try {
@@ -62,23 +63,20 @@ app.get('/auth/google/callback',
         .firstPage();
 
       if (records.length) {
-        // update
         await base(TABLE_NAME).update(records[0].id, {
           userID, firstName, lastName, Email: email
         });
       } else {
-        // create
         await base(TABLE_NAME).create({
           userID, firstName, lastName, Email: email
         });
       }
     } catch (err) {
       console.error('Airtable upsert error:', err);
-      // don't block the user flow
     }
 
-    // --- JWT generation ---
-    const payload = { id: userID, name: profile.displayName, email };
+    // --- JWT generation with picture ---
+    const payload = { id: userID, name: profile.displayName, email, picture };
     const token   = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
 
     // --- Send inline HTML to popup ---
@@ -95,7 +93,7 @@ app.get('/auth/google/callback',
   }
 );
 
-// 3) Google One‑Tap endpoint (unchanged)
+// 3) Google One‑Tap endpoint (include picture)
 app.post('/auth/onetap', async (req, res) => {
   try {
     const { credential } = req.body;
@@ -105,7 +103,12 @@ app.post('/auth/onetap', async (req, res) => {
       audience: process.env.ONE_TAP_CLIENT_ID
     });
     const gp = ticket.getPayload();
-    const user = { id: gp.sub, name: gp.name, email: gp.email, picture: gp.picture };
+    const user = {
+      id:      gp.sub,
+      name:    gp.name,
+      email:   gp.email,
+      picture: gp.picture
+    };
     const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
     res.json({ success: true, token, user });
   } catch (err) {
@@ -152,7 +155,7 @@ app.post('/api/upsert-user', async (req, res) => {
 
 // 6) Fallback SPA
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public','index.html'));
+  res.sendFile(path.join(__dirname,'public','index.html'));
 });
 
 // Start server
