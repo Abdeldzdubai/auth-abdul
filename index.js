@@ -1,101 +1,112 @@
 // index.js
 require('dotenv').config();
-const express = require('express');
-const path    = require('path');
-const cors    = require('cors');                    // ← Ajout CORS
-const passport = require('passport');
+const express   = require('express');
+const path      = require('path');
+const cors      = require('cors');
+const passport  = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const jwt     = require('jsonwebtoken');
+const jwt       = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
+const Airtable  = require('airtable');
 
 const app = express();
 
-// === CORS global ===
+// === CORS ===
 app.use(cors({
-  origin: process.env.BASE_URL,  // https://dzdubai.webflow.io
+  origin: process.env.BASE_URL,  // ex. https://dzdubai.webflow.io
   credentials: true
 }));
 
-// Lecture des variables d’environnement
-const AUTH_BASE_URL   = process.env.AUTH_BASE_URL;    // ex. https://auth-abdul.onrender.com
-const FRONT_BASE_URL  = process.env.BASE_URL;         // ex. https://dzdubai.webflow.io
-const SESSION_SECRET  = process.env.SESSION_SECRET;
-const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const ONE_TAP_CLIENT_ID    = process.env.ONE_TAP_CLIENT_ID;
-
-// Pour parser le JSON (One‑Tap)
+// JSON parser
 app.use(express.json());
-
-// Routes statiques si besoin
+// Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialisation de Passport
-app.use(passport.initialize());
+// Initialize Airtable
+Airtable.configure({ apiKey: process.env.AIRTABLE_API_KEY });
+const base = Airtable.base(process.env.AIRTABLE_BASE_ID);
+const TABLE_NAME = process.env.AIRTABLE_TABLE_NAME; // ex. "Users"
 
-// Stratégie OAuth Google pour le popup
+// Passport & Google OAuth setup
+app.use(passport.initialize());
 passport.use(new GoogleStrategy({
-  clientID:     GOOGLE_CLIENT_ID,
-  clientSecret: GOOGLE_CLIENT_SECRET,
-  callbackURL:  `${AUTH_BASE_URL}/auth/google/callback`
+  clientID:     process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  callbackURL:  `${process.env.AUTH_BASE_URL}/auth/google/callback`
 }, (accessToken, refreshToken, profile, done) => {
   done(null, profile);
 }));
 
-// 1) Déclenchement du popup OAuth
+// 1) Trigger Google OAuth popup
 app.get('/auth/google',
   passport.authenticate('google', { scope: ['profile','email'] })
 );
 
-// 2) Callback OAuth : envoi inline du JS pour postMessage + fermeture
+// 2) OAuth callback: upsert Airtable, then send HTML to postMessage+close
 app.get('/auth/google/callback',
-  passport.authenticate('google', { session: false, failureRedirect: FRONT_BASE_URL }),
-  (req, res) => {
-    const user = req.user;
-    const payload = {
-      id:      user.id,
-      name:    user.displayName,
-      email:   (user.emails[0] && user.emails[0].value) || '',
-      picture: (user.photos[0] && user.photos[0].value) || ''
-    };
-    const token = jwt.sign(payload, SESSION_SECRET, { expiresIn: '1d' });
+  passport.authenticate('google', { session: false, failureRedirect: process.env.BASE_URL }),
+  async (req, res) => {
+    const profile   = req.user;
+    const userID    = profile.id;
+    const firstName = profile.name?.givenName || '';
+    const lastName  = profile.name?.familyName  || '';
+    const email     = (profile.emails[0] && profile.emails[0].value) || '';
 
+    // --- Airtable upsert ---
+    try {
+      const records = await base(TABLE_NAME)
+        .select({
+          filterByFormula: `OR({Email}='${email}',{userID}='${userID}')`,
+          maxRecords: 1
+        })
+        .firstPage();
+
+      if (records.length) {
+        // update
+        await base(TABLE_NAME).update(records[0].id, {
+          userID, firstName, lastName, Email: email
+        });
+      } else {
+        // create
+        await base(TABLE_NAME).create({
+          userID, firstName, lastName, Email: email
+        });
+      }
+    } catch (err) {
+      console.error('Airtable upsert error:', err);
+      // don't block the user flow
+    }
+
+    // --- JWT generation ---
+    const payload = { id: userID, name: profile.displayName, email };
+    const token   = jwt.sign(payload, process.env.SESSION_SECRET, { expiresIn: '1d' });
+
+    // --- Send inline HTML to popup ---
     res.send(`<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>Connexion réussie</title>
-</head>
-<body>
+<html lang="fr"><head><meta charset="utf-8"><title>Connexion réussie</title></head><body>
   <script>
     window.opener.postMessage(
       { token: '${token}', user: ${JSON.stringify(payload)} },
-      '${FRONT_BASE_URL}'
+      '${process.env.BASE_URL}'
     );
     window.close();
   </script>
-</body>
-</html>`);
+</body></html>`);
   }
 );
 
-// 3) Endpoint Google One‑Tap (inchangé)
+// 3) Google One‑Tap endpoint (unchanged)
 app.post('/auth/onetap', async (req, res) => {
   try {
     const { credential } = req.body;
-    const client = new OAuth2Client(ONE_TAP_CLIENT_ID);
+    const client = new OAuth2Client(process.env.ONE_TAP_CLIENT_ID);
     const ticket = await client.verifyIdToken({
       idToken: credential,
-      audience: ONE_TAP_CLIENT_ID
+      audience: process.env.ONE_TAP_CLIENT_ID
     });
-    const googlePayload = ticket.getPayload();
-    const user = {
-      id:      googlePayload.sub,
-      name:    googlePayload.name,
-      email:   googlePayload.email,
-      picture: googlePayload.picture
-    };
-    const token = jwt.sign(user, SESSION_SECRET, { expiresIn: '1d' });
+    const gp = ticket.getPayload();
+    const user = { id: gp.sub, name: gp.name, email: gp.email, picture: gp.picture };
+    const token = jwt.sign(user, process.env.SESSION_SECRET, { expiresIn: '1d' });
     res.json({ success: true, token, user });
   } catch (err) {
     console.error('OneTap error:', err);
@@ -103,26 +114,47 @@ app.post('/auth/onetap', async (req, res) => {
   }
 });
 
-// 4) Route protégée pour vérifier le token
+// 4) Protected user info route
 app.get('/user', (req, res) => {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const authHeader = req.headers.authorization||'';
+  const token = authHeader.startsWith('Bearer ')? authHeader.slice(7): null;
   if (!token) return res.status(401).json({ error: 'Non connecté' });
   try {
-    const payload = jwt.verify(token, SESSION_SECRET);
+    const payload = jwt.verify(token, process.env.SESSION_SECRET);
     res.json({ name: payload.name, email: payload.email, picture: payload.picture });
   } catch {
     res.status(401).json({ error: 'Token invalide ou expiré' });
   }
 });
 
-// 5) Fallback SPA
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// 5) Upsert-user via API (for profile form)
+app.post('/api/upsert-user', async (req, res) => {
+  const { email, firstName, lastName, birthday, phone, userID } = req.body;
+  if (!email || !userID) {
+    return res.status(400).json({ error: 'email et userID nécessaires' });
+  }
+  try {
+    const records = await base(TABLE_NAME)
+      .select({ filterByFormula: `OR({Email}='${email}',{userID}='${userID}')`, maxRecords:1 })
+      .firstPage();
+    if (records.length) {
+      await base(TABLE_NAME).update(records[0].id, { email, firstName, lastName, birthday, phone, userID });
+      return res.json({ mode: 'update', id: records[0].id });
+    } else {
+      const record = await base(TABLE_NAME).create({ email, firstName, lastName, birthday, phone, userID });
+      return res.json({ mode: 'create', id: record.id });
+    }
+  } catch (err) {
+    console.error('Airtable API error:', err);
+    return res.status(500).json({ error: 'Erreur Airtable' });
+  }
 });
 
-// Démarrage du serveur
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Serveur lancé sur le port ${PORT}`);
+// 6) Fallback SPA
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public','index.html'));
 });
+
+// Start server
+const PORT = process.env.PORT||3000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
