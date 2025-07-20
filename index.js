@@ -62,14 +62,14 @@ app.get('/auth/google/callback',
         console.log('↪️ Mise à jour record', rec.id);
         await base(TABLE).update(rec.id, {
           Email:     email,
-          fisrtName: p.name?.givenName || '',
+          firstName: p.name?.givenName || '',
           lastName:  p.name?.familyName || ''
         });
       } else {
         console.log('↪️ Création nouveau record');
         await base(TABLE).create({
           Email:     email,
-          fisrtName: p.name?.givenName || '',
+          firstName: p.name?.givenName || '',
           lastName:  p.name?.familyName || ''
         });
       }
