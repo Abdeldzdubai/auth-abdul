@@ -20,7 +20,7 @@ app.use(cors({
 // 2) JSON parser
 app.use(express.json());
 
-// 3) Static files
+// 3) Static files (optionnel si vous en avez)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 4) Initialize Airtable
@@ -33,8 +33,8 @@ app.use(passport.initialize());
 passport.use(new GoogleStrategy({
   clientID:     process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  // ←- SEULE LIGNE MODIFIÉE : on reprend BASE_URL (backend) comme callback
-  callbackURL:  `${process.env.BASE_URL}/auth/google/callback`
+  // ← callbackURL d’origine, inchangé
+  callbackURL:  `${process.env.AUTH_BASE_URL}/auth/google/callback`
 }, (accessToken, refreshToken, profile, done) => done(null, profile)));
 
 // 6) OAuth popup trigger
@@ -42,7 +42,7 @@ app.get('/auth/google',
   passport.authenticate('google', { scope: ['profile','email'] })
 );
 
-// 7) OAuth callback: upsert Airtable by Email only, then postMessage+close
+// 7) OAuth callback: upsert Airtable by Email only (seulement champs manquants), then postMessage+close
 app.get('/auth/google/callback',
   passport.authenticate('google', { session: false, failureRedirect: process.env.BASE_URL }),
   async (req, res) => {
@@ -59,18 +59,27 @@ app.get('/auth/google/callback',
       const [rec] = await base(TABLE)
         .select({ filterByFormula: `{Email}="${email.replace(/"/g,'\\"')}"`, maxRecords:1 })
         .firstPage();
+
       if (rec) {
-        console.log('↪️ Mise à jour record', rec.id);
-        await base(TABLE).update(rec.id, {
-          Email:     email,
-          firstName: p.name?.givenName || '',
-          lastName:  p.name?.familyName || ''
-        });
+        // ← seule cette partie a changé : on ne complète que les champs vides
+        const updates = {};
+        const f = rec.fields;
+        if (!f.firstName && p.name?.givenName)   updates.firstName = p.name.givenName;
+        if (!f.lastName  && p.name?.familyName)  updates.lastName  = p.name.familyName;
+        if (!f.name      && p.displayName)       updates.name      = p.displayName;
+
+        if (Object.keys(updates).length > 0) {
+          await base(TABLE).update(rec.id, updates);
+          console.log('✅ Champs complétés :', updates);
+        } else {
+          console.log('ℹ️ Aucun champ à compléter, enregistrement intact');
+        }
       } else {
         console.log('↪️ Création nouveau record');
         await base(TABLE).create({
           Email:     email,
-          firstName: p.name?.givenName || '',
+          name:      p.displayName,
+          firstName: p.name?.givenName  || '',
           lastName:  p.name?.familyName || ''
         });
       }
